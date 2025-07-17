@@ -335,7 +335,7 @@ const BlueCollarAI = () => {
         {searchResults.length === 0 && searchQuery && !isLoading && (
           <div className="text-center py-12">
             <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <p className="text-gray-300 text-lg">No parts found for "{searchQuery}"</p>
+            <p className="text-gray-300 text-lg">No parts found for &quot;{searchQuery}&quot;</p>
             <p className="text-gray-400 text-sm mt-2">Try a different part number or equipment model</p>
           </div>
         )}
