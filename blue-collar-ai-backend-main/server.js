@@ -14,7 +14,7 @@ const port = process.env.PORT || 3001;
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'https://blue-collar-buddy-91j5.vercel.app',
+    'https://blue-collar-buddy-git-main-aidans-projects-ae1d702a.vercel.app/',
     'https://*.vercel.app'
   ],
   credentials: true
