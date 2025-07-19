@@ -2,8 +2,10 @@ import React, { useState, useRef } from 'react';
 import { Search, Camera, Mic, MicOff, ExternalLink, DollarSign, Zap, CheckCircle, AlertCircle } from 'lucide-react';
 import './App.css';
 
-// Replace with your actual Railway URL
-const API_BASE_URL = 'https://blue-collar-ai-backend-production.up.railway.app'; // CHANGE THIS TO YOUR RAILWAY URL
+const API_BASE_URL = process.env.REACT_APP_API_URL || 
+  (process.env.NODE_ENV === 'production' 
+    ? 'https://your-new-railway-url.up.railway.app'
+    : 'http://localhost:3001');
 
 const App = () => {
   const [searchQuery, setSearchQuery] = useState('');
