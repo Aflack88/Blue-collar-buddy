@@ -2,9 +2,10 @@ import React, { useState, useRef } from 'react';
 import { Search, Camera, Mic, MicOff, ExternalLink, DollarSign, Zap, CheckCircle, AlertCircle } from 'lucide-react';
 import './App.css';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001'; 
+// Update this with your actual Railway backend URL
+const API_BASE_URL = process.env.REACT_APP_API_URL || 
   (process.env.NODE_ENV === 'production' 
-    ? 'https://blue-collar-buddy-production.up.railway.app'
+    ? 'https://your-railway-app.railway.app'  // Replace with your actual Railway URL
     : 'http://localhost:3001');
 
 const App = () => {
@@ -27,11 +28,20 @@ const App = () => {
       console.log(`Searching for: ${query}`);
       console.log(`API URL: ${API_BASE_URL}/api/search`);
       
-      const response = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(query)}`);
+      const response = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(query)}`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        // Add timeout
+        signal: AbortSignal.timeout(30000)
+      });
+      
       const data = await response.json();
       
       if (!response.ok) {
-        throw new Error(data.error || 'Search failed');
+        throw new Error(data.error || `HTTP ${response.status}: ${response.statusText}`);
       }
       
       console.log('API Response:', data);
@@ -63,12 +73,41 @@ const App = () => {
       
     } catch (error) {
       console.error('Search failed:', error);
-      setError(`Search failed: ${error.message}`);
+      
+      // More specific error handling
+      if (error.name === 'TimeoutError') {
+        setError('Search timed out. Please try again.');
+      } else if (error.message.includes('fetch')) {
+        setError('Unable to connect to search service. Please check if the backend is running.');
+      } else {
+        setError(`Search failed: ${error.message}`);
+      }
+      
       setSearchResults([]);
     } finally {
       setIsLoading(false);
     }
   };
+
+  // Test backend connection on component mount
+  React.useEffect(() => {
+    const testConnection = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/health`, {
+          signal: AbortSignal.timeout(5000)
+        });
+        if (response.ok) {
+          console.log('✅ Backend connection successful');
+        } else {
+          console.warn('⚠️ Backend health check failed');
+        }
+      } catch (error) {
+        console.warn('⚠️ Cannot connect to backend:', error.message);
+      }
+    };
+    
+    testConnection();
+  }, []);
 
   const handleVoiceSearch = () => {
     if (!isListening) {
@@ -126,11 +165,14 @@ const App = () => {
           <p className="text-xl text-gray-300 mb-6">
             Stop wasting 25% of your time searching. Get instant part identification, pricing, and availability.
           </p>
-          {API_BASE_URL.includes('your-railway-url') && (
-            <div className="bg-red-600 text-white p-4 rounded-lg mb-4">
-              ⚠️ Please update the API_BASE_URL in src/App.js with your actual Railway URL
+          
+          {/* Connection Status */}
+          <div className="mb-4">
+            <div className="inline-flex items-center space-x-2 text-sm">
+              <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+              <span className="text-gray-300">Backend: {API_BASE_URL}</span>
             </div>
-          )}
+          </div>
         </div>
 
         {/* Search Interface */}
@@ -186,7 +228,10 @@ const App = () => {
         {/* Error Message */}
         {error && (
           <div className="bg-red-600 text-white p-4 rounded-lg mb-4">
-            {error}
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="h-5 w-5" />
+              <span>{error}</span>
+            </div>
           </div>
         )}
 
