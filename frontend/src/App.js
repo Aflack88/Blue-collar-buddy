@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Search, Camera, Mic, MicOff, ExternalLink, DollarSign, Zap, CheckCircle, AlertCircle } from 'lucide-react';
 import './App.css';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001'; 
   (process.env.NODE_ENV === 'production' 
     ? 'https://blue-collar-buddy-production.up.railway.app'
     : 'http://localhost:3001');
