@@ -3,5 +3,13 @@
   "outputDirectory": "frontend/build",
   "installCommand": "cd frontend && npm install",
   "devCommand": "cd frontend && npm start",
-  "framework": "create-react-app"
+  "framework": "create-react-app",
+  "env": {
+    "REACT_APP_API_URL": "@railway-backend-url"
+  },
+  "build": {
+    "env": {
+      "REACT_APP_API_URL": "@railway-backend-url"
+    }
+  }
 }
