@@ -3,9 +3,7 @@ const cors = require('cors');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const rateLimit = require('express-rate-limit');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-puppeteer.use(StealthPlugin());
+const puppeteer = require('puppeteer');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -21,134 +19,125 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Rate limiting
+// Rate limiting - more restrictive for production
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50,
+  max: 30, // Reduced from 50
   message: { error: 'Too many requests, please try again later' }
 });
 app.use('/api', limiter);
 
-// Define robust selectors at the top
-const graingerSelectors = [
-  '[data-automation-id="product-tile"]',
-  '.search-result',
-  '.product-item',
-  '.product-card',
-  '.ProductTileContainer',
-  '[class*="product"]',
-  '[class*="tile"]',
-  '[class*="result"]',
-  '[role="listitem"]',
-  'article',
-  'li'
-];
-const mcmasterSelectors = [
-  '.ProductTableRow',
-  '.product-item',
-  '.search-result',
-  '.product',
-  '[class*="product"]',
-  '[class*="row"]',
-  '[role="row"]',
-  'tr'
-];
-
-// Enhanced multi-method scraper
-async function searchGrainger(query, maxResults = 5) {
-  console.log(`🔍 Starting multi-method search for: "${query}"`);
-  
-  // Method 1: Try with advanced headers
-  let results = await tryAdvancedHeaders(query, maxResults);
-  results = normalizeAndDeduplicate(results);
-  if (results.length > 0) {
-    console.log(`✅ Method 1 (Headers) succeeded: ${results.length} results`);
-    return results;
-  }
-  
-  // Method 2: Try with Puppeteer
-  results = await tryPuppeteerMethod(query, maxResults);
-  results = normalizeAndDeduplicate(results);
-  if (results.length > 0) {
-    console.log(`✅ Method 2 (Puppeteer) succeeded: ${results.length} results`);
-    return results;
-  }
-  
-  // Method 3: Try McMaster-Carr as backup
-  results = await tryMcMasterCarr(query, maxResults);
-  results = normalizeAndDeduplicate(results);
-  if (results.length > 0) {
-    console.log(`✅ Method 3 (McMaster) succeeded: ${results.length} results`);
-    return results;
-  }
-  
-  // Method 4: Return realistic sample data
-  console.log(`⚠️ All methods failed, returning sample data for: "${query}"`);
-  return getSampleDataForQuery(query);
-}
-
-// Method 1: Advanced headers with user agent rotation
-async function tryAdvancedHeaders(query, maxResults) {
-  const userAgents = [
+// Enhanced scraping configurations
+const SCRAPING_CONFIG = {
+  timeout: 30000,
+  maxRetries: 2,
+  retryDelay: 3000,
+  userAgents: [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
-  ];
-  
-  try {
-    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
-    
-    // Random delay to appear human
-    await new Promise(resolve => setTimeout(resolve, Math.random() * 3000 + 1000));
-    
-    const searchUrl = `https://www.grainger.com/search?searchQuery=${encodeURIComponent(query)}`;
-    
-    const response = await axios.get(searchUrl, {
-      headers: {
-        'User-Agent': randomUA,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-        'DNT': '1',
-        'Connection': 'keep-alive'
-      },
-      timeout: 20000,
-      maxRedirects: 5
-    });
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  ]
+};
 
-    if (response.status === 200) {
-      return parseGraingerHTML(response.data, query, maxResults);
+// Supplier configurations
+const SUPPLIERS = {
+  grainger: {
+    baseUrl: 'https://www.grainger.com',
+    searchPath: '/search',
+    selectors: {
+      productContainer: [
+        '[data-automation-id="product-tile"]',
+        '.search-result-item',
+        '.product-item',
+        '.ProductTileContainer',
+        'article[data-testid="product-tile"]'
+      ],
+      partNumber: [
+        '[data-automation-id="product-item-number"]',
+        '.product-number',
+        '.item-number',
+        '[data-testid="item-number"]'
+      ],
+      productName: [
+        '[data-automation-id="product-title"]',
+        '.product-title',
+        'h3[data-testid="product-title"]',
+        '.product-name'
+      ],
+      price: [
+        '[data-automation-id="product-price"]',
+        '.price',
+        '.product-price',
+        '[data-testid="price"]'
+      ],
+      availability: [
+        '[data-automation-id="product-availability"]',
+        '.availability',
+        '.stock-status'
+      ]
     }
-  } catch (error) {
-    console.log('Method 1 failed:', error.message);
+  },
+  mcmaster: {
+    baseUrl: 'https://www.mcmaster.com',
+    searchPath: '/search',
+    selectors: {
+      productContainer: [
+        '.ProductTableRow',
+        'tr[data-testid="product-row"]',
+        '.product-row'
+      ],
+      partNumber: [
+        '.PartNumber',
+        '.part-number',
+        'td:first-child'
+      ],
+      productName: [
+        '.ProductDescription',
+        '.description',
+        'td:nth-child(2)'
+      ],
+      price: [
+        '.Price',
+        '.price',
+        '.cost'
+      ]
+    }
+  },
+  mscdirect: {
+    baseUrl: 'https://www.mscdirect.com',
+    searchPath: '/browse/search',
+    selectors: {
+      productContainer: [
+        '.product-tile',
+        '.search-result'
+      ],
+      partNumber: [
+        '.product-number',
+        '.item-number'
+      ],
+      productName: [
+        '.product-title',
+        '.product-name'
+      ],
+      price: [
+        '.price',
+        '.product-price'
+      ]
+    }
   }
-  
-  return [];
-}
+};
 
-// Method 2: Puppeteer with stealth
-async function tryPuppeteerMethod(query, maxResults) {
-  let browser;
-  let page;
-  let attempt = 0;
-  const maxAttempts = 3;
-  const baseDelay = 2000;
-  const searchUrl = `https://www.grainger.com/search?searchQuery=${encodeURIComponent(query)}`;
+class ProductScraper {
+  constructor() {
+    this.browser = null;
+    this.activeSessions = 0;
+    this.maxConcurrentSessions = 3;
+  }
 
-  while (attempt < maxAttempts) {
-    try {
-      console.log('🤖 Launching Puppeteer... (attempt', attempt + 1, ')');
-      browser = await puppeteer.launch({
+  async initBrowser() {
+    if (!this.browser) {
+      this.browser = await puppeteer.launch({
         headless: true,
         args: [
           '--no-sandbox',
@@ -158,391 +147,287 @@ async function tryPuppeteerMethod(query, maxResults) {
           '--no-first-run',
           '--no-zygote',
           '--disable-gpu',
-          '--disable-web-security',
-          '--disable-features=VizDisplayCompositor'
-          // '--proxy-server=YOUR_PROXY_URL', // Uncomment and set for proxy
+          '--memory-pressure-off',
+          '--disable-background-timer-throttling',
+          '--disable-features=TranslateUI',
+          '--disable-ipc-flooding-protection'
         ]
       });
+    }
+    return this.browser;
+  }
+
+  async closeBrowser() {
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+    }
+  }
+
+  getRandomUserAgent() {
+    return SCRAPING_CONFIG.userAgents[Math.floor(Math.random() * SCRAPING_CONFIG.userAgents.length)];
+  }
+
+  async scrapeWithAxios(supplier, query) {
+    const config = SUPPLIERS[supplier];
+    const searchUrl = `${config.baseUrl}${config.searchPath}?searchQuery=${encodeURIComponent(query)}`;
+    
+    try {
+      console.log(`🌐 Axios scraping ${supplier}: ${query}`);
+      
+      const response = await axios.get(searchUrl, {
+        headers: {
+          'User-Agent': this.getRandomUserAgent(),
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.5',
+          'Accept-Encoding': 'gzip, deflate, br',
+          'Cache-Control': 'no-cache',
+          'Pragma': 'no-cache'
+        },
+        timeout: SCRAPING_CONFIG.timeout
+      });
+
+      return this.parseHTML(response.data, config, supplier);
+    } catch (error) {
+      console.error(`❌ Axios scraping failed for ${supplier}:`, error.message);
+      return [];
+    }
+  }
+
+  async scrapeWithPuppeteer(supplier, query) {
+    if (this.activeSessions >= this.maxConcurrentSessions) {
+      throw new Error('Maximum concurrent sessions reached');
+    }
+
+    const config = SUPPLIERS[supplier];
+    const searchUrl = `${config.baseUrl}${config.searchPath}?searchQuery=${encodeURIComponent(query)}`;
+    
+    let page;
+    this.activeSessions++;
+
+    try {
+      console.log(`🤖 Puppeteer scraping ${supplier}: ${query}`);
+      
+      const browser = await this.initBrowser();
       page = await browser.newPage();
+      
+      await page.setUserAgent(this.getRandomUserAgent());
       await page.setViewport({ 
         width: 1366 + Math.floor(Math.random() * 200), 
         height: 768 + Math.floor(Math.random() * 200) 
       });
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+      // Block unnecessary resources
       await page.setRequestInterception(true);
       page.on('request', (req) => {
-        if (req.resourceType() === 'image' || req.resourceType() === 'stylesheet') {
+        const resourceType = req.resourceType();
+        if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
           req.abort();
         } else {
           req.continue();
         }
       });
-      console.log(`🌐 Navigating to: ${searchUrl}`);
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 3000 + 2000));
+
+      // Navigate with random delay
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
       await page.goto(searchUrl, { 
         waitUntil: 'domcontentloaded',
-        timeout: 30000 
+        timeout: SCRAPING_CONFIG.timeout 
       });
-      // Wait for product selector or timeout
+
+      // Wait for product containers
       let foundSelector = null;
-      for (const selector of graingerSelectors) {
+      for (const selector of config.selectors.productContainer) {
         try {
           await page.waitForSelector(selector, { timeout: 8000 });
           foundSelector = selector;
           break;
         } catch (e) {
-          // Try next selector
+          continue;
         }
       }
+
       if (!foundSelector) {
-        throw new Error('No product selectors found on page');
+        throw new Error(`No product containers found for ${supplier}`);
       }
+
       // Extract data
-      const results = await page.evaluate((maxResults, foundSelector) => {
+      const results = await page.evaluate((config, supplier) => {
         const products = [];
-        const elements = document.querySelectorAll(foundSelector);
-        for (let i = 0; i < Math.min(elements.length, maxResults); i++) {
-          const elem = elements[i];
-          const partNumber = elem.querySelector('[data-automation-id="product-item-number"], .product-number, .item-number')?.textContent?.trim() || '';
-          const name = elem.querySelector('[data-automation-id="product-title"], .product-title, h3, h4')?.textContent?.trim() || '';
-          const priceText = elem.querySelector('[data-automation-id="product-price"], .price, .product-price')?.textContent?.trim() || '';
-          const availability = elem.querySelector('[data-automation-id="product-availability"], .availability')?.textContent?.trim() || 'Available';
-          if (partNumber && name) {
+        const containers = document.querySelectorAll(config.selectors.productContainer[0]);
+        
+        containers.forEach((container, index) => {
+          if (index >= 10) return; // Limit results
+          
+          const getTextBySelectors = (selectors) => {
+            for (const selector of selectors) {
+              const element = container.querySelector(selector);
+              if (element && element.textContent.trim()) {
+                return element.textContent.trim();
+              }
+            }
+            return '';
+          };
+
+          const partNumber = getTextBySelectors(config.selectors.partNumber);
+          const productName = getTextBySelectors(config.selectors.productName);
+          const priceText = getTextBySelectors(config.selectors.price);
+          const availability = getTextBySelectors(config.selectors.availability);
+
+          if (partNumber && productName) {
             products.push({
               partNumber,
-              name,
+              productName,
               priceText,
               availability,
-              supplier: 'Grainger',
-              source: 'Puppeteer'
+              supplier
             });
           }
-        }
+        });
+
         return products;
-      }, maxResults, foundSelector);
-      const processedResults = results.map(part => ({
-        ...part,
-        price: parsePrice(part.priceText),
-        inStock: !part.availability.toLowerCase().includes('out of stock'),
-        productUrl: searchUrl,
-        lastUpdated: new Date().toISOString()
-      }));
-      console.log(`✅ Puppeteer extracted ${processedResults.length} parts`);
-      return processedResults;
+      }, config, supplier);
+
+      return this.normalizeResults(results, supplier);
+
     } catch (error) {
-      console.error('Method 2 (Puppeteer) failed:', error.message);
-      if (page) {
-        try {
-          const html = await page.content();
-          require('fs').writeFileSync(`puppeteer_error_${Date.now()}.html`, html);
-          await page.screenshot({ path: `puppeteer_error_${Date.now()}.png` });
-        } catch (e) {
-          console.error('Failed to save error HTML/screenshot:', e.message);
-        }
-      }
-      attempt++;
-      if (attempt < maxAttempts) {
-        const delay = baseDelay * Math.pow(2, attempt); // Exponential backoff
-        console.log(`Retrying Puppeteer in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
+      console.error(`❌ Puppeteer scraping failed for ${supplier}:`, error.message);
+      return [];
     } finally {
-      if (browser) {
-        await browser.close();
+      if (page) {
+        await page.close();
       }
+      this.activeSessions--;
     }
   }
-  return [];
-}
 
-// Method 3: McMaster-Carr backup
-async function tryMcMasterCarr(query, maxResults) {
-  try {
-    console.log(`🔧 Trying McMaster-Carr for: "${query}"`);
-    
-    const searchUrl = `https://www.mcmaster.com/search?query=${encodeURIComponent(query)}`;
-    
-    const response = await axios.get(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-      },
-      timeout: 15000
-    });
-
-    const $ = cheerio.load(response.data);
+  parseHTML(html, config, supplier) {
+    const $ = cheerio.load(html);
     const results = [];
-    
-    // Try multiple selectors for McMaster
-    for (const selector of mcmasterSelectors) {
-      $(selector).each((index, element) => {
-        if (index >= maxResults) return false;
-        
-        const $elem = $(element);
-        const partNumber = $elem.find('.PartNumber, .part-number, [class*="part"]').text().trim();
-        const name = $elem.find('.ProductDescription, .product-description, .description').text().trim();
-        const priceText = $elem.find('.Price, .price, [class*="price"]').text().trim();
-        
-        if (partNumber && name) {
-          results.push({
-            partNumber,
-            name,
-            price: parsePrice(priceText),
-            priceText,
-            supplier: 'McMaster-Carr',
-            inStock: true,
-            availability: 'Available',
-            productUrl: 'https://www.mcmaster.com',
-            lastUpdated: new Date().toISOString(),
-            source: 'McMaster'
-          });
-        }
-      });
+
+    for (const containerSelector of config.selectors.productContainer) {
+      const containers = $(containerSelector);
       
-      if (results.length > 0) break;
-    }
-    
-    console.log(`✅ McMaster-Carr found ${results.length} parts`);
-    return results;
-    
-  } catch (error) {
-    console.error('Method 3 (McMaster) failed:', error.message);
-  }
-  
-  return [];
-}
-
-// Helper: Parse Grainger HTML
-function parseGraingerHTML(html, query, maxResults) {
-  const $ = cheerio.load(html);
-  const results = [];
-  for (const selector of graingerSelectors) {
-    const products = $(selector);
-    
-    if (products.length > 0) {
-      console.log(`📋 Parsing ${products.length} products with selector: ${selector}`);
-      
-      products.each((index, element) => {
-        if (index >= maxResults) return false;
+      if (containers.length > 0) {
+        console.log(`📋 Found ${containers.length} products with selector: ${containerSelector}`);
         
-        const $elem = $(element);
-        const partData = extractPartData($elem, $);
-        
-        if (partData && partData.partNumber && partData.name) {
-          results.push(partData);
-        }
-      });
-      break;
-    }
-  }
-  
-  return results;
-}
+        containers.each((index, element) => {
+          if (index >= 10) return false; // Limit results
+          
+          const $container = $(element);
+          const getTextBySelectors = (selectors) => {
+            for (const selector of selectors) {
+              const text = $container.find(selector).first().text().trim();
+              if (text) return text;
+            }
+            return '';
+          };
 
-// Extract part data from HTML element
-function extractPartData($elem, $) {
-  try {
-    // Try multiple selectors for part number
-    const partNumberSelectors = [
-      '[data-automation-id="product-item-number"]',
-      '.product-number',
-      '.item-number',
-      '.part-number',
-      '[class*="item-number"]',
-      '[class*="part-number"]'
-    ];
+          const partNumber = getTextBySelectors(config.selectors.partNumber);
+          const productName = getTextBySelectors(config.selectors.productName);
+          const priceText = getTextBySelectors(config.selectors.price);
+          const availability = getTextBySelectors(config.selectors.availability);
 
-    let partNumber = '';
-    for (const selector of partNumberSelectors) {
-      partNumber = $elem.find(selector).text().trim();
-      if (partNumber) break;
-    }
-
-    // Try multiple selectors for product name
-    const nameSelectors = [
-      '[data-automation-id="product-title"]',
-      '.product-title',
-      '.product-name',
-      'h3',
-      'h4',
-      '[class*="title"]'
-    ];
-
-    let name = '';
-    for (const selector of nameSelectors) {
-      name = $elem.find(selector).text().trim();
-      if (name && name.length > 3) break;
-    }
-
-    // Try multiple selectors for price
-    const priceSelectors = [
-      '[data-automation-id="product-price"]',
-      '.price',
-      '.product-price',
-      '[class*="price"]',
-      '.cost'
-    ];
-
-    let priceText = '';
-    for (const selector of priceSelectors) {
-      priceText = $elem.find(selector).text().trim();
-      if (priceText && priceText.includes('$')) break;
-    }
-
-    const price = parsePrice(priceText);
-
-    // Try multiple selectors for availability
-    const availabilitySelectors = [
-      '[data-automation-id="product-availability"]',
-      '.availability',
-      '.stock-status',
-      '[class*="availability"]'
-    ];
-
-    let availability = '';
-    for (const selector of availabilitySelectors) {
-      availability = $elem.find(selector).text().trim();
-      if (availability) break;
-    }
-
-    const productUrl = $elem.find('a').first().attr('href');
-    const fullUrl = productUrl && productUrl.startsWith('http') 
-      ? productUrl 
-      : productUrl 
-        ? `https://www.grainger.com${productUrl}`
-        : null;
-
-    return {
-      partNumber: partNumber || 'N/A',
-      name: name || 'Product Name Not Found',
-      price: price,
-      priceText: priceText,
-      availability: availability || 'Check with supplier',
-      inStock: parseAvailability(availability),
-      supplier: 'Grainger',
-      productUrl: fullUrl,
-      lastUpdated: new Date().toISOString()
-    };
-
-  } catch (error) {
-    console.error('Error extracting part data:', error);
-    return null;
-  }
-}
-
-// Sample data generator
-function getSampleDataForQuery(query) {
-  const lowerQuery = query.toLowerCase();
-  
-  if (lowerQuery.includes('bearing') || lowerQuery.includes('6203')) {
-    return [
-      {
-        partNumber: '6203-2Z',
-        name: 'SKF Deep Groove Ball Bearing - 6203-2Z',
-        price: 12.45,
-        supplier: 'Grainger',
-        inStock: true,
-        availability: 'In Stock',
-        productUrl: 'https://www.grainger.com',
-        lastUpdated: new Date().toISOString(),
-        note: 'Sample data - scraping methods in progress'
-      },
-      {
-        partNumber: '6203-RS',
-        name: 'Timken Single Row Ball Bearing',
-        price: 11.80,
-        supplier: 'Grainger',
-        inStock: true,
-        availability: 'In Stock',
-        productUrl: 'https://www.grainger.com',
-        lastUpdated: new Date().toISOString(),
-        note: 'Sample data - scraping methods in progress'
+          if (partNumber && productName) {
+            results.push({
+              partNumber,
+              productName,
+              priceText,
+              availability,
+              supplier
+            });
+          }
+        });
+        break;
       }
-    ];
+    }
+
+    return this.normalizeResults(results, supplier);
   }
-  
-  if (lowerQuery.includes('seal') || lowerQuery.includes('hydraulic')) {
-    return [
-      {
-        partNumber: 'CR-25x35x7',
-        name: 'Hydraulic Oil Seal 25x35x7mm',
-        price: 15.60,
-        supplier: 'Grainger',
-        inStock: true,
-        availability: 'In Stock',
-        productUrl: 'https://www.grainger.com',
-        lastUpdated: new Date().toISOString(),
-        note: 'Sample data - scraping methods in progress'
-      }
-    ];
-  }
-  
-  if (lowerQuery.includes('bolt') || lowerQuery.includes('screw') || lowerQuery.includes('fastener')) {
-    return [
-      {
-        partNumber: 'M8x25-HEX',
-        name: 'Hex Head Cap Screw M8 x 25mm, Stainless Steel',
-        price: 2.45,
-        supplier: 'Grainger',
-        inStock: true,
-        availability: 'In Stock',
-        productUrl: 'https://www.grainger.com',
-        lastUpdated: new Date().toISOString(),
-        note: 'Sample data - scraping methods in progress'
-      }
-    ];
-  }
-  
-  return [
-    {
-      partNumber: 'IND-' + Math.random().toString(36).substr(2, 6).toUpperCase(),
-      name: `Industrial Component for "${query}"`,
-      price: Math.round((Math.random() * 50 + 10) * 100) / 100,
-      supplier: 'Grainger',
-      inStock: true,
-      availability: 'In Stock',
-      productUrl: 'https://www.grainger.com',
+
+  normalizeResults(results, supplier) {
+    return results.map(item => ({
+      partNumber: item.partNumber,
+      name: item.productName,
+      price: this.parsePrice(item.priceText),
+      priceText: item.priceText,
+      availability: item.availability || 'Contact supplier',
+      inStock: this.parseAvailability(item.availability),
+      supplier: supplier,
+      productUrl: SUPPLIERS[supplier].baseUrl,
       lastUpdated: new Date().toISOString(),
-      note: 'Sample data - scraping methods in progress'
+      source: 'live_scraping'
+    }));
+  }
+
+  parsePrice(priceText) {
+    if (!priceText) return null;
+    const match = priceText.match(/\$?(\d+(?:,\d{3})*(?:\.\d{2})?)/);
+    return match ? parseFloat(match[1].replace(/,/g, '')) : null;
+  }
+
+  parseAvailability(availabilityText) {
+    if (!availabilityText) return true;
+    const text = availabilityText.toLowerCase();
+    return !text.includes('out of stock') && 
+           !text.includes('discontinued') && 
+           !text.includes('unavailable');
+  }
+
+  async searchAllSuppliers(query, maxResults = 10) {
+    const searchPromises = [];
+    const supplierNames = Object.keys(SUPPLIERS);
+
+    for (const supplier of supplierNames) {
+      // Try Axios first, then Puppeteer as fallback
+      searchPromises.push(
+        this.scrapeWithAxios(supplier, query)
+          .then(results => results.length > 0 ? results : this.scrapeWithPuppeteer(supplier, query))
+          .catch(error => {
+            console.error(`Failed to scrape ${supplier}:`, error.message);
+            return [];
+          })
+      );
     }
-  ];
-}
 
-// Helper functions
-function parsePrice(priceText) {
-  if (!priceText) return null;
-  const match = priceText.match(/\$?(\d+(?:,\d{3})*(?:\.\d{2})?)/);
-  return match ? parseFloat(match[1].replace(/,/g, '')) : null;
-}
-
-function parseAvailability(availabilityText) {
-  if (!availabilityText) return true;
-  const text = availabilityText.toLowerCase();
-  return !text.includes('out of stock') && !text.includes('discontinued');
-}
-
-// Add normalization and deduplication before returning results in searchGrainger
-function normalizeAndDeduplicate(results) {
-  const seen = new Set();
-  return results.filter(item => {
-    const key = `${item.supplier}|${item.partNumber}|${item.name}`.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    // Normalize price
-    if (typeof item.price === 'string') item.price = parsePrice(item.price);
-    // Normalize inStock
-    if (typeof item.inStock !== 'boolean') item.inStock = parseAvailability(item.availability);
-    // Normalize productUrl
-    if (item.productUrl && !item.productUrl.startsWith('http')) {
-      item.productUrl = `https://www.grainger.com${item.productUrl}`;
+    try {
+      const allResults = await Promise.all(searchPromises);
+      const combinedResults = allResults.flat();
+      
+      // Remove duplicates and limit results
+      const uniqueResults = this.removeDuplicates(combinedResults);
+      return uniqueResults.slice(0, maxResults);
+      
+    } catch (error) {
+      console.error('Error in searchAllSuppliers:', error);
+      return [];
     }
-    return true;
-  });
+  }
+
+  removeDuplicates(results) {
+    const seen = new Set();
+    return results.filter(item => {
+      const key = `${item.partNumber}-${item.name}`.toLowerCase().replace(/\s+/g, '');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
 }
+
+// Initialize scraper
+const scraper = new ProductScraper();
+
+// Cleanup on exit
+process.on('SIGTERM', async () => {
+  console.log('Received SIGTERM, closing browser...');
+  await scraper.closeBrowser();
+  process.exit(0);
+});
 
 // API Routes
 app.get('/api/search', async (req, res) => {
-  const { q: query, limit = 5 } = req.query;
+  const { q: query, limit = 10 } = req.query;
   
   if (!query || query.trim().length < 2) {
     return res.status(400).json({ 
@@ -551,31 +436,32 @@ app.get('/api/search', async (req, res) => {
     });
   }
 
-  console.log(`🔍 API Search request: "${query}"`);
+  console.log(`🔍 Live scraping search: "${query}"`);
   
   try {
-    // Search with multi-method approach
-    let results = await searchGrainger(query, parseInt(limit));
+    const results = await scraper.searchAllSuppliers(query, parseInt(limit));
     
-    // If no results, try cleaned query
-    if (results.length === 0 || (results[0] && results[0].note)) {
-      const cleanQuery = query.replace(/[-_\s]/g, '').replace(/^0+/, '');
-      if (cleanQuery !== query && cleanQuery.length >= 2) {
-        console.log(`🔄 Retrying with cleaned query: "${cleanQuery}"`);
-        const retryResults = await searchGrainger(cleanQuery, parseInt(limit));
-        if (retryResults.length > 0 && (!retryResults[0].note)) {
-          results = retryResults;
-        }
-      }
+    if (results.length === 0) {
+      return res.status(404).json({
+        message: 'No parts found',
+        query,
+        suggestions: [
+          'Try a more specific part number',
+          'Check spelling',
+          'Use manufacturer part numbers when possible',
+          'Try broader search terms'
+        ],
+        timestamp: new Date().toISOString()
+      });
     }
     
     res.json({ 
       results,
       query,
-      cleanQuery: query.replace(/[-_\s]/g, '').replace(/^0+/, ''),
       resultCount: results.length,
       timestamp: new Date().toISOString(),
-      source: results.length > 0 ? results[0].supplier : 'Multiple'
+      searchMethod: 'live_scraping',
+      suppliersSearched: Object.keys(SUPPLIERS)
     });
     
   } catch (error) {
@@ -596,17 +482,20 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memory: process.memoryUsage(),
-    version: '2.0.0',
-    features: ['Multi-method scraping', 'Puppeteer', 'McMaster-Carr backup']
+    version: '3.0.0',
+    features: ['Live Web Scraping', 'Multi-Supplier Support', 'No Sample Data'],
+    activeSessions: scraper.activeSessions,
+    supportedSuppliers: Object.keys(SUPPLIERS)
   });
 });
 
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Blue Collar AI Backend API - Multi-Method Scraper',
-    version: '2.0.0',
-    methods: ['Advanced Headers', 'Puppeteer Browser', 'McMaster-Carr Backup', 'Smart Fallback'],
+    message: 'Blue Collar AI Backend API - Live Web Scraper',
+    version: '3.0.0',
+    features: ['Live scraping only', 'Multi-supplier support', 'Production-ready'],
+    supportedSuppliers: Object.keys(SUPPLIERS),
     endpoints: {
       search: '/api/search?q=YOUR_QUERY',
       health: '/api/health'
@@ -627,8 +516,9 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(port, () => {
-  console.log(`🚀 Blue Collar AI Backend v2.0 running on port ${port}`);
+  console.log(`🚀 Blue Collar AI Backend v3.0 running on port ${port}`);
   console.log(`📋 Health check: http://localhost:${port}/api/health`);
   console.log(`🔍 Search example: http://localhost:${port}/api/search?q=6203%20bearing`);
-  console.log(`🎯 Multi-method scraping: Headers → Puppeteer → McMaster → Samples`);
+  console.log(`🎯 Live scraping only - no sample data`);
+  console.log(`🏪 Supported suppliers: ${Object.keys(SUPPLIERS).join(', ')}`);
 });
