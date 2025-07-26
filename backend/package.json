@@ -1,5 +1,5 @@
 {
-  "name": "blue-collar-ai-backend",
+  "name": "backend",
   "version": "1.0.0",
   "description": "Backend API for Blue Collar AI parts search",
   "main": "server.js",
