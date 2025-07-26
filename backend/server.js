@@ -12,10 +12,19 @@ const port = process.env.PORT || 3001;
 app.use(cors({
   origin: [
     'http://localhost:3000',
-    'https://blue-collar-buddy-git-main-aidans-projects-ae1d702a.vercel.app/',
-    'https://*.vercel.app'
-  ],
-  credentials: true
+    'http://localhost:3001',
+    'https://blue-collar-buddy-git-main-aidans-projects-ae1d702a.vercel.app',
+    'https://*.vercel.app',
+    'https://blue-collar-ai.vercel.app', // Add your new Vercel domain
+    'https://your-vercel-domain.vercel.app', // Replace with actual domain
+    // You can also use a more permissive approach for development:
+    process.env.NODE_ENV === 'production' 
+      ? ['https://*.vercel.app', 'https://blue-collar-ai.vercel.app']
+      : ['http://localhost:3000', 'http://localhost:3001']
+  ].flat(),
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 app.use(express.json());
 
