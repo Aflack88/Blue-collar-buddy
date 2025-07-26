@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "name": "blue-collar-ai",
+  "buildCommand": "cd frontend && npm ci && npm run build",
+  "outputDirectory": "frontend/build",
+  "installCommand": "cd frontend && npm ci",
+  "framework": "create-react-app",
+  "env": {
+    "REACT_APP_API_URL": "https://blue-collar-buddy-production.up.railway.app"
+  },
+  "build": {
+    "env": {
+      "REACT_APP_API_URL": "https://blue-collar-buddy-production.up.railway.app"
+    }
+  }
+}
