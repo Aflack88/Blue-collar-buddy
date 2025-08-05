@@ -1,147 +1,76 @@
-const express = require('express');
-const cors = require('cors');
+const puppeteer = require('puppeteer');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const rateLimit = require('express-rate-limit');
-const puppeteer = require('puppeteer');
 
-const app = express();
-const port = process.env.PORT || 3001;
-
-// Middleware
-app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'https://blue-collar-buddy-git-main-aidans-projects-ae1d702a.vercel.app',
-    'https://*.vercel.app',
-    'https://blue-collar-ai.vercel.app', // Add your new Vercel domain
-    'https://your-vercel-domain.vercel.app', // Replace with actual domain
-    // You can also use a more permissive approach for development:
-    process.env.NODE_ENV === 'production' 
-      ? ['https://*.vercel.app', 'https://blue-collar-ai.vercel.app']
-      : ['http://localhost:3000', 'http://localhost:3001']
-  ].flat(),
-  credentials: true,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
-}));
-app.use(express.json());
-
-// Rate limiting - more restrictive for production
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // Reduced from 50
-  message: { error: 'Too many requests, please try again later' }
-});
-app.use('/api', limiter);
-
-// Enhanced scraping configurations
-const SCRAPING_CONFIG = {
-  timeout: 30000,
-  maxRetries: 2,
-  retryDelay: 3000,
-  userAgents: [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-  ]
-};
-
-// Supplier configurations
-const SUPPLIERS = {
-  grainger: {
-    baseUrl: 'https://www.grainger.com',
-    searchPath: '/search',
-    selectors: {
-      productContainer: [
-        '[data-automation-id="product-tile"]',
-        '.search-result-item',
-        '.product-item',
-        '.ProductTileContainer',
-        'article[data-testid="product-tile"]'
-      ],
-      partNumber: [
-        '[data-automation-id="product-item-number"]',
-        '.product-number',
-        '.item-number',
-        '[data-testid="item-number"]'
-      ],
-      productName: [
-        '[data-automation-id="product-title"]',
-        '.product-title',
-        'h3[data-testid="product-title"]',
-        '.product-name'
-      ],
-      price: [
-        '[data-automation-id="product-price"]',
-        '.price',
-        '.product-price',
-        '[data-testid="price"]'
-      ],
-      availability: [
-        '[data-automation-id="product-availability"]',
-        '.availability',
-        '.stock-status'
-      ]
-    }
-  },
-  mcmaster: {
-    baseUrl: 'https://www.mcmaster.com',
-    searchPath: '/search',
-    selectors: {
-      productContainer: [
-        '.ProductTableRow',
-        'tr[data-testid="product-row"]',
-        '.product-row'
-      ],
-      partNumber: [
-        '.PartNumber',
-        '.part-number',
-        'td:first-child'
-      ],
-      productName: [
-        '.ProductDescription',
-        '.description',
-        'td:nth-child(2)'
-      ],
-      price: [
-        '.Price',
-        '.price',
-        '.cost'
-      ]
-    }
-  },
-  mscdirect: {
-    baseUrl: 'https://www.mscdirect.com',
-    searchPath: '/browse/search',
-    selectors: {
-      productContainer: [
-        '.product-tile',
-        '.search-result'
-      ],
-      partNumber: [
-        '.product-number',
-        '.item-number'
-      ],
-      productName: [
-        '.product-title',
-        '.product-name'
-      ],
-      price: [
-        '.price',
-        '.product-price'
-      ]
-    }
-  }
-};
-
-class ProductScraper {
+class GraingerPriceScraper {
   constructor() {
     this.browser = null;
-    this.activeSessions = 0;
-    this.maxConcurrentSessions = 3;
+    this.baseUrl = 'https://www.grainger.com';
+    this.userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
+    ];
+    
+    // Enhanced selectors based on current Grainger DOM structure
+    this.selectors = {
+      // Product containers - ordered by reliability
+      productContainer: [
+        '[data-automation-id="product-tile"]',
+        'article[data-testid="product-tile"]',
+        '.ProductTile',
+        '.search-result-item',
+        '.product-tile'
+      ],
+      
+      // Price selectors - multiple fallbacks
+      price: [
+        '[data-automation-id="product-price"] .price-value',
+        '[data-automation-id="product-price"]',
+        '.price-current',
+        '.price-value',
+        '.product-price .price',
+        '.price-display',
+        '[data-testid="price"]',
+        '.price'
+      ],
+      
+      // Part number selectors
+      partNumber: [
+        '[data-automation-id="product-item-number"]',
+        '.item-number',
+        '.product-number',
+        '[data-testid="item-number"]'
+      ],
+      
+      // Product name selectors
+      productName: [
+        '[data-automation-id="product-title"] a',
+        '[data-automation-id="product-title"]',
+        'h3[data-testid="product-title"]',
+        '.product-title a',
+        '.product-title'
+      ],
+      
+      // Availability selectors
+      availability: [
+        '[data-automation-id="product-availability"]',
+        '.availability-status',
+        '.stock-status',
+        '.availability'
+      ],
+      
+      // Quantity pricing table (for bulk pricing)
+      quantityPricing: [
+        '.quantity-pricing-table tbody tr',
+        '.tier-pricing tbody tr',
+        '.price-break-table tbody tr'
+      ]
+    };
+  }
+
+  getRandomUserAgent() {
+    return this.userAgents[Math.floor(Math.random() * this.userAgents.length)];
   }
 
   async initBrowser() {
@@ -159,7 +88,8 @@ class ProductScraper {
           '--memory-pressure-off',
           '--disable-background-timer-throttling',
           '--disable-features=TranslateUI',
-          '--disable-ipc-flooding-protection'
+          '--disable-ipc-flooding-protection',
+          '--window-size=1366,768'
         ]
       });
     }
@@ -173,60 +103,51 @@ class ProductScraper {
     }
   }
 
-  getRandomUserAgent() {
-    return SCRAPING_CONFIG.userAgents[Math.floor(Math.random() * SCRAPING_CONFIG.userAgents.length)];
-  }
-
-  async scrapeWithAxios(supplier, query) {
-    const config = SUPPLIERS[supplier];
-    const searchUrl = `${config.baseUrl}${config.searchPath}?searchQuery=${encodeURIComponent(query)}`;
+  // Fast Axios-based scraping (primary method)
+  async getPricesWithAxios(query, maxResults = 10) {
+    const searchUrl = `${this.baseUrl}/search?searchQuery=${encodeURIComponent(query)}`;
     
     try {
-      console.log(`🌐 Axios scraping ${supplier}: ${query}`);
+      console.log(`🌐 Grainger Axios price check: ${query}`);
       
       const response = await axios.get(searchUrl, {
         headers: {
           'User-Agent': this.getRandomUserAgent(),
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.5',
           'Accept-Encoding': 'gzip, deflate, br',
           'Cache-Control': 'no-cache',
-          'Pragma': 'no-cache'
+          'Pragma': 'no-cache',
+          'Upgrade-Insecure-Requests': '1'
         },
-        timeout: SCRAPING_CONFIG.timeout
+        timeout: 15000,
+        maxRedirects: 3
       });
 
-      return this.parseHTML(response.data, config, supplier);
+      return this.parseHTMLForPrices(response.data, maxResults);
+      
     } catch (error) {
-      console.error(`❌ Axios scraping failed for ${supplier}:`, error.message);
-      return [];
+      console.error(`❌ Axios failed for Grainger:`, error.message);
+      throw error;
     }
   }
 
-  async scrapeWithPuppeteer(supplier, query) {
-    if (this.activeSessions >= this.maxConcurrentSessions) {
-      throw new Error('Maximum concurrent sessions reached');
-    }
-
-    const config = SUPPLIERS[supplier];
-    const searchUrl = `${config.baseUrl}${config.searchPath}?searchQuery=${encodeURIComponent(query)}`;
-    
+  // Puppeteer-based scraping (fallback method)
+  async getPricesWithPuppeteer(query, maxResults = 10) {
+    const searchUrl = `${this.baseUrl}/search?searchQuery=${encodeURIComponent(query)}`;
     let page;
-    this.activeSessions++;
 
     try {
-      console.log(`🤖 Puppeteer scraping ${supplier}: ${query}`);
+      console.log(`🤖 Grainger Puppeteer price check: ${query}`);
       
       const browser = await this.initBrowser();
       page = await browser.newPage();
       
+      // Set realistic browser profile
       await page.setUserAgent(this.getRandomUserAgent());
-      await page.setViewport({ 
-        width: 1366 + Math.floor(Math.random() * 200), 
-        height: 768 + Math.floor(Math.random() * 200) 
-      });
-
-      // Block unnecessary resources
+      await page.setViewport({ width: 1366, height: 768 });
+      
+      // Block unnecessary resources for speed
       await page.setRequestInterception(true);
       page.on('request', (req) => {
         const resourceType = req.resourceType();
@@ -237,93 +158,130 @@ class ProductScraper {
         }
       });
 
-      // Navigate with random delay
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 2000 + 1000));
-      await page.goto(searchUrl, { 
-        waitUntil: 'domcontentloaded',
-        timeout: SCRAPING_CONFIG.timeout 
-      });
-
-      // Wait for product containers
-      let foundSelector = null;
-      for (const selector of config.selectors.productContainer) {
+      // Navigate with retry logic
+      let retries = 2;
+      while (retries > 0) {
         try {
-          await page.waitForSelector(selector, { timeout: 8000 });
-          foundSelector = selector;
+          await page.goto(searchUrl, { 
+            waitUntil: 'domcontentloaded',
+            timeout: 20000 
+          });
           break;
         } catch (e) {
-          continue;
+          retries--;
+          if (retries === 0) throw e;
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
       }
 
-      if (!foundSelector) {
-        throw new Error(`No product containers found for ${supplier}`);
-      }
+      // Wait for products to load
+      await this.waitForProducts(page);
 
-      // Extract data
-      const results = await page.evaluate((config, supplier) => {
-        const products = [];
-        const containers = document.querySelectorAll(config.selectors.productContainer[0]);
-        
-        containers.forEach((container, index) => {
-          if (index >= 10) return; // Limit results
-          
-          const getTextBySelectors = (selectors) => {
-            for (const selector of selectors) {
-              const element = container.querySelector(selector);
-              if (element && element.textContent.trim()) {
-                return element.textContent.trim();
-              }
-            }
-            return '';
-          };
-
-          const partNumber = getTextBySelectors(config.selectors.partNumber);
-          const productName = getTextBySelectors(config.selectors.productName);
-          const priceText = getTextBySelectors(config.selectors.price);
-          const availability = getTextBySelectors(config.selectors.availability);
-
-          if (partNumber && productName) {
-            products.push({
-              partNumber,
-              productName,
-              priceText,
-              availability,
-              supplier
-            });
-          }
-        });
-
-        return products;
-      }, config, supplier);
-
-      return this.normalizeResults(results, supplier);
+      // Extract pricing data
+      const results = await this.extractPricingData(page, maxResults);
+      
+      return results;
 
     } catch (error) {
-      console.error(`❌ Puppeteer scraping failed for ${supplier}:`, error.message);
-      return [];
+      console.error(`❌ Puppeteer failed for Grainger:`, error.message);
+      throw error;
     } finally {
       if (page) {
         await page.close();
       }
-      this.activeSessions--;
     }
   }
 
-  parseHTML(html, config, supplier) {
+  async waitForProducts(page) {
+    // Try multiple selectors to wait for product containers
+    for (const selector of this.selectors.productContainer) {
+      try {
+        await page.waitForSelector(selector, { timeout: 8000 });
+        console.log(`✅ Found products with selector: ${selector}`);
+        return;
+      } catch (e) {
+        continue;
+      }
+    }
+    throw new Error('No product containers found on Grainger page');
+  }
+
+  async extractPricingData(page, maxResults) {
+    return await page.evaluate((selectors, maxResults) => {
+      const products = [];
+      
+      // Find product containers
+      let containers = [];
+      for (const selector of selectors.productContainer) {
+        containers = document.querySelectorAll(selector);
+        if (containers.length > 0) break;
+      }
+
+      containers.forEach((container, index) => {
+        if (index >= maxResults) return;
+        
+        const getTextBySelectors = (selectorArray) => {
+          for (const selector of selectorArray) {
+            const element = container.querySelector(selector);
+            if (element && element.textContent.trim()) {
+              return element.textContent.trim();
+            }
+          }
+          return '';
+        };
+
+        const getAttributeBySelectors = (selectorArray, attribute) => {
+          for (const selector of selectorArray) {
+            const element = container.querySelector(selector);
+            if (element && element.getAttribute(attribute)) {
+              return element.getAttribute(attribute);
+            }
+          }
+          return '';
+        };
+
+        // Extract core data
+        const partNumber = getTextBySelectors(selectors.partNumber);
+        const productName = getTextBySelectors(selectors.productName);
+        const priceText = getTextBySelectors(selectors.price);
+        const availability = getTextBySelectors(selectors.availability);
+        
+        // Get product URL
+        const linkElement = container.querySelector('a[href*="/product/"]');
+        const productUrl = linkElement ? linkElement.href : '';
+
+        if (partNumber && productName && priceText) {
+          products.push({
+            partNumber,
+            productName,
+            priceText,
+            availability,
+            productUrl,
+            containerHTML: container.outerHTML.substring(0, 500) // Debug info
+          });
+        }
+      });
+
+      return products;
+    }, this.selectors, maxResults);
+  }
+
+  parseHTMLForPrices(html, maxResults) {
     const $ = cheerio.load(html);
     const results = [];
 
-    for (const containerSelector of config.selectors.productContainer) {
+    // Try each container selector
+    for (const containerSelector of this.selectors.productContainer) {
       const containers = $(containerSelector);
       
       if (containers.length > 0) {
-        console.log(`📋 Found ${containers.length} products with selector: ${containerSelector}`);
+        console.log(`📋 Found ${containers.length} products with: ${containerSelector}`);
         
         containers.each((index, element) => {
-          if (index >= 10) return false; // Limit results
+          if (index >= maxResults) return false;
           
           const $container = $(element);
+          
           const getTextBySelectors = (selectors) => {
             for (const selector of selectors) {
               const text = $container.find(selector).first().text().trim();
@@ -332,202 +290,174 @@ class ProductScraper {
             return '';
           };
 
-          const partNumber = getTextBySelectors(config.selectors.partNumber);
-          const productName = getTextBySelectors(config.selectors.productName);
-          const priceText = getTextBySelectors(config.selectors.price);
-          const availability = getTextBySelectors(config.selectors.availability);
+          const partNumber = getTextBySelectors(this.selectors.partNumber);
+          const productName = getTextBySelectors(this.selectors.productName);
+          const priceText = getTextBySelectors(this.selectors.price);
+          const availability = getTextBySelectors(this.selectors.availability);
+          
+          // Get product URL
+          const productLink = $container.find('a[href*="/product/"]').first().attr('href');
+          const productUrl = productLink ? `${this.baseUrl}${productLink}` : '';
 
-          if (partNumber && productName) {
+          if (partNumber && productName && priceText) {
             results.push({
               partNumber,
               productName,
               priceText,
               availability,
-              supplier
+              productUrl
             });
           }
         });
-        break;
+        break; // Stop after finding results with first working selector
       }
     }
 
-    return this.normalizeResults(results, supplier);
+    return this.normalizeResults(results);
   }
 
-  normalizeResults(results, supplier) {
-    return results.map(item => ({
-      partNumber: item.partNumber,
-      name: item.productName,
-      price: this.parsePrice(item.priceText),
-      priceText: item.priceText,
-      availability: item.availability || 'Contact supplier',
-      inStock: this.parseAvailability(item.availability),
-      supplier: supplier,
-      productUrl: SUPPLIERS[supplier].baseUrl,
-      lastUpdated: new Date().toISOString(),
-      source: 'live_scraping'
-    }));
+  normalizeResults(results) {
+    return results.map(item => {
+      const price = this.parsePrice(item.priceText);
+      
+      return {
+        partNumber: item.partNumber,
+        name: item.productName,
+        price: price,
+        priceText: item.priceText,
+        availability: item.availability || 'Contact supplier',
+        inStock: this.parseAvailability(item.availability),
+        supplier: 'grainger',
+        productUrl: item.productUrl,
+        lastUpdated: new Date().toISOString(),
+        confidence: this.calculateConfidence(item)
+      };
+    });
   }
 
   parsePrice(priceText) {
     if (!priceText) return null;
-    const match = priceText.match(/\$?(\d+(?:,\d{3})*(?:\.\d{2})?)/);
-    return match ? parseFloat(match[1].replace(/,/g, '')) : null;
+    
+    // Handle various price formats
+    const patterns = [
+      /\$(\d+(?:,\d{3})*(?:\.\d{2})?)/,  // $123.45 or $1,234.56
+      /(\d+(?:,\d{3})*(?:\.\d{2})?)\s*(?:USD|dollars?)/i,  // 123.45 USD
+      /Price:\s*\$?(\d+(?:,\d{3})*(?:\.\d{2})?)/i  // Price: $123.45
+    ];
+    
+    for (const pattern of patterns) {
+      const match = priceText.match(pattern);
+      if (match) {
+        return parseFloat(match[1].replace(/,/g, ''));
+      }
+    }
+    
+    return null;
   }
 
   parseAvailability(availabilityText) {
     if (!availabilityText) return true;
+    
     const text = availabilityText.toLowerCase();
-    return !text.includes('out of stock') && 
-           !text.includes('discontinued') && 
-           !text.includes('unavailable');
+    const unavailableKeywords = [
+      'out of stock', 'discontinued', 'unavailable', 
+      'backordered', 'special order', 'not available'
+    ];
+    
+    return !unavailableKeywords.some(keyword => text.includes(keyword));
   }
 
-  async searchAllSuppliers(query, maxResults = 10) {
-    const searchPromises = [];
-    const supplierNames = Object.keys(SUPPLIERS);
+  calculateConfidence(item) {
+    let confidence = 0.5; // Base confidence
+    
+    // Increase confidence based on data quality
+    if (item.priceText && this.parsePrice(item.priceText)) confidence += 0.3;
+    if (item.partNumber && item.partNumber.length > 3) confidence += 0.1;
+    if (item.productUrl) confidence += 0.1;
+    
+    return Math.min(confidence, 1.0);
+  }
 
-    for (const supplier of supplierNames) {
-      // Try Axios first, then Puppeteer as fallback
-      searchPromises.push(
-        this.scrapeWithAxios(supplier, query)
-          .then(results => results.length > 0 ? results : this.scrapeWithPuppeteer(supplier, query))
-          .catch(error => {
-            console.error(`Failed to scrape ${supplier}:`, error.message);
-            return [];
-          })
-      );
+  // Main public method - attempts Axios first, falls back to Puppeteer
+  async getLivePrices(query, maxResults = 10) {
+    if (!query || query.trim().length < 2) {
+      throw new Error('Query must be at least 2 characters');
     }
 
+    console.log(`🔍 Starting Grainger price lookup for: "${query}"`);
+    
     try {
-      const allResults = await Promise.all(searchPromises);
-      const combinedResults = allResults.flat();
+      // Try fast Axios method first
+      const results = await this.getPricesWithAxios(query, maxResults);
       
-      // Remove duplicates and limit results
-      const uniqueResults = this.removeDuplicates(combinedResults);
-      return uniqueResults.slice(0, maxResults);
+      if (results.length > 0) {
+        console.log(`✅ Axios successful: ${results.length} results`);
+        return results;
+      }
+      
+      console.log(`⚠️ Axios returned no results, trying Puppeteer...`);
+      
+      // Fall back to Puppeteer
+      const puppeteerResults = await this.getPricesWithPuppeteer(query, maxResults);
+      console.log(`✅ Puppeteer successful: ${puppeteerResults.length} results`);
+      
+      return puppeteerResults;
       
     } catch (error) {
-      console.error('Error in searchAllSuppliers:', error);
-      return [];
+      console.error(`❌ All Grainger methods failed:`, error.message);
+      throw new Error(`Grainger price lookup failed: ${error.message}`);
     }
   }
 
-  removeDuplicates(results) {
-    const seen = new Set();
-    return results.filter(item => {
-      const key = `${item.partNumber}-${item.name}`.toLowerCase().replace(/\s+/g, '');
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  // Get detailed pricing for a specific part number
+  async getDetailedPricing(partNumber) {
+    try {
+      const results = await this.getLivePrices(partNumber, 1);
+      
+      if (results.length === 0) {
+        return null;
+      }
+      
+      const product = results[0];
+      
+      // If we have a product URL, we could scrape the product page for quantity pricing
+      // For now, return the basic pricing info
+      return {
+        ...product,
+        quantityPricing: [], // Could be enhanced to scrape qty breaks
+        specifications: {}, // Could be enhanced to scrape specs
+        images: [] // Could be enhanced to scrape images
+      };
+      
+    } catch (error) {
+      console.error(`❌ Detailed pricing failed for ${partNumber}:`, error.message);
+      throw error;
+    }
   }
 }
 
-// Initialize scraper
-const scraper = new ProductScraper();
+module.exports = GraingerPriceScraper;
 
-// Cleanup on exit
-process.on('SIGTERM', async () => {
-  console.log('Received SIGTERM, closing browser...');
-  await scraper.closeBrowser();
-  process.exit(0);
-});
+// Usage example:
+/*
+const scraper = new GraingerPriceScraper();
 
-// API Routes
-app.get('/api/search', async (req, res) => {
-  const { q: query, limit = 10 } = req.query;
-  
-  if (!query || query.trim().length < 2) {
-    return res.status(400).json({ 
-      error: 'Query parameter must be at least 2 characters',
-      example: '/api/search?q=6203%20bearing'
-    });
-  }
-
-  console.log(`🔍 Live scraping search: "${query}"`);
-  
+async function testGraingerPrices() {
   try {
-    const results = await scraper.searchAllSuppliers(query, parseInt(limit));
+    // Basic price lookup
+    const results = await scraper.getLivePrices('6203 bearing', 5);
+    console.log('Results:', results);
     
-    if (results.length === 0) {
-      return res.status(404).json({
-        message: 'No parts found',
-        query,
-        suggestions: [
-          'Try a more specific part number',
-          'Check spelling',
-          'Use manufacturer part numbers when possible',
-          'Try broader search terms'
-        ],
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    res.json({ 
-      results,
-      query,
-      resultCount: results.length,
-      timestamp: new Date().toISOString(),
-      searchMethod: 'live_scraping',
-      suppliersSearched: Object.keys(SUPPLIERS)
-    });
+    // Detailed pricing for specific part
+    const detailed = await scraper.getDetailedPricing('6203-2Z');
+    console.log('Detailed:', detailed);
     
   } catch (error) {
-    console.error('❌ Search API error:', error);
-    res.status(500).json({ 
-      error: 'Search failed', 
-      message: error.message,
-      query,
-      timestamp: new Date().toISOString()
-    });
+    console.error('Error:', error.message);
+  } finally {
+    await scraper.closeBrowser();
   }
-});
+}
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    version: '3.0.0',
-    features: ['Live Web Scraping', 'Multi-Supplier Support', 'No Sample Data'],
-    activeSessions: scraper.activeSessions,
-    supportedSuppliers: Object.keys(SUPPLIERS)
-  });
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Blue Collar AI Backend API - Live Web Scraper',
-    version: '3.0.0',
-    features: ['Live scraping only', 'Multi-supplier support', 'Production-ready'],
-    supportedSuppliers: Object.keys(SUPPLIERS),
-    endpoints: {
-      search: '/api/search?q=YOUR_QUERY',
-      health: '/api/health'
-    },
-    example: '/api/search?q=6203%20bearing'
-  });
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('❌ Unhandled error:', err);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: err.message,
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Start server
-app.listen(port, () => {
-  console.log(`🚀 Blue Collar AI Backend v3.0 running on port ${port}`);
-  console.log(`📋 Health check: http://localhost:${port}/api/health`);
-  console.log(`🔍 Search example: http://localhost:${port}/api/search?q=6203%20bearing`);
-  console.log(`🎯 Live scraping only - no sample data`);
-  console.log(`🏪 Supported suppliers: ${Object.keys(SUPPLIERS).join(', ')}`);
-});
+// testGraingerPrices();
+*/
