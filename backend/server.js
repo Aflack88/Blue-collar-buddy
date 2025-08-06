@@ -5,8 +5,9 @@ const cheerio = require('cheerio');
 const rateLimit = require('express-rate-limit');
 const puppeteer = require('puppeteer');
 
-// Import specialized Grainger scraper
+// Import specialized scrapers
 const GraingerPriceScraper = require('./scrapers/grainger-scraper');
+const LLMSearchEnhancer = require('./scrapers/llm-search-enhancer');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -352,7 +353,8 @@ class ProductScraper {
            !text.includes('unavailable');
   }
 
-  async searchAllSuppliers(query, maxResults = 10) {
+  // Updated method to work with a single query (used by LLM enhancer)
+  async searchSingleQuery(query, maxResults = 10) {
     const searchPromises = [];
     const supplierNames = Object.keys(SUPPLIERS);
     
@@ -391,9 +393,21 @@ class ProductScraper {
       return uniqueResults.slice(0, maxResults);
       
     } catch (error) {
-      console.error('Error in searchAllSuppliers:', error);
+      console.error('Error in searchSingleQuery:', error);
       return [];
     }
+  }
+
+  // Enhanced search using LLM
+  async searchAllSuppliers(query, maxResults = 10) {
+    console.log(`🧠 Starting LLM-enhanced search for: "${query}"`);
+    
+    // Use LLM enhancer for smart search
+    const searchResult = await llmEnhancer.smartSearch(query, async (enhancedQuery) => {
+      return await this.searchSingleQuery(enhancedQuery, maxResults);
+    });
+    
+    return searchResult.results;
   }
 
   removeDuplicates(results) {
@@ -410,6 +424,7 @@ class ProductScraper {
 // Initialize scrapers
 const scraper = new ProductScraper();
 const graingerScraper = new GraingerPriceScraper();
+const llmEnhancer = new LLMSearchEnhancer();
 
 // Cleanup on exit
 process.on('SIGTERM', async () => {
@@ -427,6 +442,8 @@ process.on('SIGINT', async () => {
 });
 
 // API Routes
+
+// Enhanced search endpoint with LLM integration
 app.get('/api/search', async (req, res) => {
   const { q: query, limit = 10 } = req.query;
   
@@ -437,16 +454,21 @@ app.get('/api/search', async (req, res) => {
     });
   }
 
-  console.log(`🔍 Live scraping search: "${query}"`);
+  console.log(`🔍 LLM-enhanced search: "${query}"`);
   
   try {
-    const results = await scraper.searchAllSuppliers(query, parseInt(limit));
+    // Use LLM enhancer for intelligent search
+    const searchResult = await llmEnhancer.smartSearch(query, async (enhancedQuery) => {
+      return await scraper.searchSingleQuery(enhancedQuery, parseInt(limit));
+    });
     
-    if (results.length === 0) {
+    if (searchResult.results.length === 0) {
       return res.status(404).json({
         message: 'No parts found',
-        query,
-        suggestions: [
+        query: searchResult.query,
+        originalQuery: searchResult.originalQuery,
+        enhancementMethod: searchResult.method,
+        suggestions: searchResult.suggestions || [
           'Try a more specific part number',
           'Check spelling',
           'Use manufacturer part numbers when possible',
@@ -457,11 +479,14 @@ app.get('/api/search', async (req, res) => {
     }
     
     res.json({ 
-      results,
-      query,
-      resultCount: results.length,
+      results: searchResult.results,
+      query: searchResult.query,
+      originalQuery: searchResult.originalQuery,
+      enhancementMethod: searchResult.method,
+      confidence: searchResult.confidence,
+      resultCount: searchResult.results.length,
       timestamp: new Date().toISOString(),
-      searchMethod: 'live_scraping',
+      searchMethod: 'llm_enhanced_scraping',
       suppliersSearched: ['grainger', ...Object.keys(SUPPLIERS)]
     });
     
@@ -471,6 +496,36 @@ app.get('/api/search', async (req, res) => {
       error: 'Search failed', 
       message: error.message,
       query,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// Query enhancement endpoint (for testing LLM)
+app.get('/api/enhance-query', async (req, res) => {
+  const { q: query } = req.query;
+  
+  if (!query) {
+    return res.status(400).json({ 
+      error: 'Query parameter required',
+      example: '/api/enhance-query?q=bearing'
+    });
+  }
+  
+  try {
+    console.log(`🧠 Testing query enhancement: "${query}"`);
+    const enhancement = await llmEnhancer.enhanceSearchQuery(query);
+    
+    res.json({
+      originalQuery: query,
+      enhancement,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('❌ Query enhancement error:', error);
+    res.status(500).json({ 
+      error: 'Query enhancement failed',
+      message: error.message,
       timestamp: new Date().toISOString()
     });
   }
@@ -515,39 +570,55 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     memory: process.memoryUsage(),
-    version: '3.1.0',
+    version: '4.0.0',
     features: [
+      'LLM-Enhanced Search', 
       'Live Web Scraping', 
       'Multi-Supplier Support', 
       'Specialized Grainger Scraper',
+      'Smart Query Enhancement',
       'No Sample Data'
     ],
     activeSessions: scraper.activeSessions,
     supportedSuppliers: ['grainger', ...Object.keys(SUPPLIERS)],
-    graingerScraperStatus: 'integrated'
+    llmEnhancerStatus: 'integrated',
+    environmentVariables: {
+      hasOpenAIKey: !!process.env.OPENAI_API_KEY,
+      hasLLMKey: !!process.env.LLM_API_KEY,
+      llmModel: process.env.LLM_MODEL || 'gpt-4o-mini'
+    }
   });
 });
 
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Blue Collar AI Backend API - Live Web Scraper with Enhanced Grainger Support',
-    version: '3.1.0',
+    message: 'Blue Collar AI Backend API - LLM-Enhanced Industrial Parts Search',
+    version: '4.0.0',
     features: [
+      'LLM-enhanced query processing', 
       'Live scraping only', 
       'Multi-supplier support', 
       'Specialized Grainger scraper',
+      'Smart search suggestions',
       'Production-ready'
     ],
     supportedSuppliers: ['grainger', ...Object.keys(SUPPLIERS)],
     endpoints: {
       search: '/api/search?q=YOUR_QUERY',
+      enhanceQuery: '/api/enhance-query?q=YOUR_QUERY',
       health: '/api/health',
       testGrainger: '/api/test-grainger?q=YOUR_QUERY'
     },
     examples: {
-      generalSearch: '/api/search?q=6203%20bearing',
+      generalSearch: '/api/search?q=bearing',
+      enhancedQuery: '/api/enhance-query?q=bearing',
       graingerTest: '/api/test-grainger?q=6203%20bearing'
+    },
+    llmIntegration: {
+      enabled: true,
+      fallbackToRules: true,
+      enhancesGenericQueries: true
     }
   });
 });
@@ -563,12 +634,20 @@ app.use((err, req, res, next) => {
 });
 
 // Start server
-app.listen(port, () => {
-  console.log(`🚀 Blue Collar AI Backend v3.1 running on port ${port}`);
+app.listen(port, '0.0.0.0', () => {
+  console.log(`🚀 Blue Collar AI Backend v4.0 running on port ${port}`);
   console.log(`📋 Health check: http://localhost:${port}/api/health`);
-  console.log(`🔍 Search example: http://localhost:${port}/api/search?q=6203%20bearing`);
+  console.log(`🔍 Search example: http://localhost:${port}/api/search?q=bearing`);
+  console.log(`🧠 Query enhancement: http://localhost:${port}/api/enhance-query?q=bearing`);
   console.log(`🏪 Grainger test: http://localhost:${port}/api/test-grainger?q=6203%20bearing`);
-  console.log(`🎯 Live scraping with specialized Grainger support`);
+  console.log(`🎯 LLM-enhanced live scraping with smart query processing`);
   console.log(`🏪 Supported suppliers: grainger, ${Object.keys(SUPPLIERS).join(', ')}`);
   console.log(`🌐 Backend URL: https://blue-collar-buddy-production.up.railway.app`);
+  
+  // LLM configuration status
+  const hasLLM = !!(process.env.OPENAI_API_KEY || process.env.LLM_API_KEY);
+  console.log(`🧠 LLM Enhancement: ${hasLLM ? 'ENABLED' : 'RULE-BASED FALLBACK'}`);
+  if (hasLLM) {
+    console.log(`🤖 LLM Model: ${process.env.LLM_MODEL || 'gpt-4o-mini'}`);
+  }
 });
