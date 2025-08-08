@@ -10,6 +10,7 @@ const GraingerPriceScraper = require('./scrapers/grainger-scraper');
 const LLMSearchEnhancer = require('./scrapers/llm-search-enhancer');
 
 const app = express();
+app.set('trust proxy', true);
 const port = process.env.PORT || 3001;
 
 // Middleware
